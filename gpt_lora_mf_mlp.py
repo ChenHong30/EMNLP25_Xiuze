@@ -76,7 +76,7 @@ class UIPrompt:
 
         # Load the best saved model.
         with open(pre_model, 'rb') as f:
-            self.pre_model = torch.load(f)
+            self.pre_model = torch.load(f, weights_only=False, map_location=torch.device('cuda'))
 
         self.rec = MLP(emsize)
         self.att = nn.MultiheadAttention(emsize, num_heads, dropout=0.2, batch_first=True)
@@ -171,7 +171,7 @@ class UIPrompt:
             cross_attentions=transformer_outputs.cross_attentions,
         ), rating
 
-    def forward(self, user, item, text, mask, rating_prediction=True, ignore_index=-100):
+    def forward(self, user, item, text, mask, item_embedding=None, rating_prediction=True, ignore_index=-100):
         device = user.device
 
         if rating_prediction:
@@ -186,6 +186,20 @@ class UIPrompt:
         u_src = self.ui2emsize(u_src)
         i_src = self.pre_model.item_embeddings(item)  # (batch_size, emsize)
         i_src = self.ui2emsize(i_src)
+
+        # 处理新的item_embedding
+        if item_embedding is not None:
+            # 确保item_embedding的维度与模型的emsize一致
+            if item_embedding.size(-1) != i_src.size(-1):
+                # 如果需要，添加一个转换层
+                if not hasattr(self, 'item_embedding_proj'):
+                    self.item_embedding_proj = nn.Linear(item_embedding.size(-1), i_src.size(-1)).to(item_embedding.device)
+                item_embedding = self.item_embedding_proj(item_embedding)
+            
+            # 融合原始的item embedding和新的item_embedding
+            # 可以选择简单相加、拼接后线性转换或其他融合方式
+            i_src = i_src + item_embedding  # 这里采用简单相加的方式
+
         w_src = self.transformer.wte(text)  # (batch_size, tgt_len, emsize)
         # src = torch.cat([u_src.unsqueeze(1), i_src.unsqueeze(1), w_src], 1)  # (batch_size, total_len, emsize)
         # src = w_src  # (batch_size, total_len, emsize)
