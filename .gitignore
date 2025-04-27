@@ -1,0 +1,8 @@
+/logs
+/data
+/llm
+*.ipynb_checkpoints
+/__pycache__
+/outputs
+/models
+
