@@ -13,6 +13,8 @@ import copy
 from lora import LoraLinear
 from typing import Optional, Tuple, Union
 from torch.nn import CrossEntropyLoss
+from utils import now_time
+from moe import TransformerMoELayer
 
 
 class UIPrompt:
@@ -20,6 +22,8 @@ class UIPrompt:
     def from_pretrained(cls, pretrained_model_name_or_path, pre_model, post_att, nuser, nitem, lora_nums, lora_dim,
                         num_heads, pad_token_id, **kwargs):
         model = super().from_pretrained(pretrained_model_name_or_path, **kwargs)
+
+        # -------------------------------- LoRA Replacement --------------------------------
 
         # Replace targeting linear layers with LoRA layers.
         # get target module name
@@ -63,6 +67,100 @@ class UIPrompt:
                 param.requires_grad = True
             else:
                 param.requires_grad = False
+        # -------------------------------- LoRA Replacement --------------------------------
+
+        # # -------------------------------- MoE Replacement --------------------------------
+        # config = model.config
+        # emsize = config.n_embd
+        # intermediate_dim = config.n_inner if config.n_inner is not None else emsize * 4 # 获取或计算中间层维度
+
+        # # --- 替换 Transformer 块中的 MLP 为 MoE ---
+        # print(now_time() + "Replacing MLP with MoE in Transformer Blocks")
+        # num_experts_transformer = 4 # Transformer 内部 MoE 的专家数
+        # num_replaced = 0
+        # for i, block in enumerate(model.transformer.h):
+        #     # 创建新的 MoE 层实例
+        #     moe_layer = TransformerMoELayer(
+        #         embed_dim=emsize,
+        #         num_experts=num_experts_transformer,
+        #         intermediate_dim=intermediate_dim)
+        #     # 替换原始的 MLP 层
+        #     block.mlp = moe_layer
+        #     num_replaced += 1
+        # print(now_time() + f"Successfully replaced MLP in {num_replaced} transformer blocks with MoE ({num_experts_transformer} experts each).")
+        # # 冻结除FFN以外参数
+        # for param in model.parameters():
+        #     param.requires_grad = False
+        
+        # num_unfrozen_tensors = 0
+        # total_unfrozen_params = 0
+        # unfrozen_param_names_list = [] # 用于记录解冻的参数名，方便验证
+
+        # # 然后，解冻所有属于 MoE 层的参数
+        # for name, param in model.named_parameters():
+        #     is_moe_param = False
+        #     name_parts = name.split('.')
+        #     # 检查参数名是否属于被替换的 MLP（现在是 MoE）路径
+        #     # 路径通常是 transformer.h.<block_index>.mlp.<internal_moe_layer_name>
+        #     # 核心是检查它是否在 transformer.h.<数字>.mlp 这个层级下
+        #     if len(name_parts) > 3 and \
+        #     name_parts[0] == 'transformer' and \
+        #     name_parts[1] == 'h' and \
+        #     name_parts[2].isdigit() and \
+        #     name_parts[3] == 'mlp':
+        #         is_moe_param = True
+
+        #     if is_moe_param:
+        #         param.requires_grad = True
+        #         num_unfrozen_tensors += 1
+        #         total_unfrozen_params += param.numel() # 统计解冻参数的总数量
+        #         unfrozen_param_names_list.append(name) # 记录名字用于后续验证
+        # # verificatioon
+        # trainable_params_found = unfrozen_param_names_list 
+        # if not trainable_params_found:
+        #     print(now_time() + "🚨 Warning: No parameters ended up being marked as trainable! Check the freezing logic.")
+        # else:
+        #     # 再次确认数量（应与上面打印的一致）
+        #     print(now_time() + f"Verifying the {len(trainable_params_found)} parameter tensors marked as trainable.")
+        #     print(now_time() + f"Listing examples:")
+            
+        #     # 打印前 10 个和最后 10 个名字，排序以便查看
+        #     limit = 10 
+        #     sorted_trainable_names = sorted(trainable_params_found) 
+        #     for i, name in enumerate(sorted_trainable_names):
+        #         if i < limit or i >= len(sorted_trainable_names) - limit:
+        #             print(f"   - {name}")
+        #         elif i == limit:
+        #             print("     ...")
+                    
+        #     # 执行核心的模式检查
+        #     all_match_pattern = True
+        #     mismatched_names = []
+        #     for name in trainable_params_found:
+        #         # 再次应用严格的模式检查逻辑
+        #         name_parts = name.split('.')
+        #         is_expected_pattern = (
+        #             len(name_parts) > 3 and
+        #             name_parts[0] == 'transformer' and
+        #             name_parts[1] == 'h' and
+        #             name_parts[2].isdigit() and
+        #             name_parts[3] == 'mlp'
+        #         )
+        #         if not is_expected_pattern:
+        #             all_match_pattern = False
+        #             mismatched_names.append(name)
+
+        #     # 打印最终验证结果
+        #     if all_match_pattern:
+        #         print(now_time() + "✅ Verification Check PASSED: All identified trainable parameters correctly follow the 'transformer.h.<i>.mlp.' pattern.")
+        #     else:
+        #         print(now_time() + "🚨 Verification Check FAILED: Some trainable parameters DO NOT follow the expected 'transformer.h.<i>.mlp.' pattern!")
+        #         print(now_time() + "Please review the list above and these potential mismatches:")
+        #         for mismatched_name in mismatched_names[:20]: # 最多打印 20 个不匹配的
+        #             print(f"      - {mismatched_name}")
+        #         if len(mismatched_names) > 20: print("        ...")
+        #         print(now_time() + "This might indicate an issue with the freezing logic or unexpected model structure/naming.")
+        # # -------------------------------- MoE Replacement --------------------------------
 
         model.init_prompt(pre_model, post_att, nuser, nitem, lora_layer_nums, num_heads, pad_token_id)
         return model
