@@ -63,7 +63,7 @@ class UIPrompt:
 
         # Finally, freeze all parameters except for LoRA parameters.
         for name, param in model.named_parameters():
-            if "lora_base_right" in name or "lora_base_left" in name or "lora_img_right" in name or "lora_img_left" in name:
+            if "lora_base_right" in name or "lora_base_left" in name or "lora_img_right" in name or "lora_img_left" in name or "lora_gate_generator" in name:
                 param.requires_grad = True
             else:
                 param.requires_grad = False
