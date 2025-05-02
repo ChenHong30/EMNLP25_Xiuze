@@ -137,6 +137,11 @@ def train(data):
     first_param = next(model.parameters()) # 获取第一个参数
     first_param.requires_grad = True       # 仅设置第一个参数的 requires grad=True
 
+    # print(now_time() + "Trainable Parameters:")
+    # for name, param in model.named_parameters():
+    #     if param.requires_grad:
+    #         print(now_time() + f"  {name}: {param.shape}")
+
     while True:
         user, item, rating, seq, mask, item_embedding = data.next_batch()  # data.step += 1
         user = user.to(device)  # (batch_size,)

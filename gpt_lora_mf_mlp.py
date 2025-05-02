@@ -5,7 +5,7 @@ transformers.models.gpt2.modeling_gpt2.GPT2Attention.forward = models_forward.gp
 transformers.models.gpt2.modeling_gpt2.GPT2Block.forward = models_forward.gpt2_block_forward
 transformers.models.gpt2.modeling_gpt2.GPT2Model.forward = models_forward.gpt2_model_forward
 
-from transformers import GPT2LMHeadModel
+from transformers import GPT2Tokenizer,GPT2LMHeadModel, BertModel
 from transformers.modeling_outputs import CausalLMOutputWithCrossAttentions
 import torch.nn as nn
 import torch
@@ -22,7 +22,6 @@ class UIPrompt:
     def from_pretrained(cls, pretrained_model_name_or_path, pre_model, post_att, nuser, nitem, lora_nums, lora_dim,
                         num_heads, pad_token_id, **kwargs):
         model = super().from_pretrained(pretrained_model_name_or_path, **kwargs)
-
         # -------------------------------- LoRA Replacement --------------------------------
 
         # Replace targeting linear layers with LoRA layers.
@@ -61,12 +60,6 @@ class UIPrompt:
             # replace
             module_list[-2].__setattr__(name_struct[-1], lora)
 
-        # Finally, freeze all parameters except for LoRA parameters.
-        for name, param in model.named_parameters():
-            if "lora_base_right" in name or "lora_base_left" in name or "lora_img_right" in name or "lora_img_left" in name or "lora_gate_generator" in name:
-                param.requires_grad = True
-            else:
-                param.requires_grad = False
         # -------------------------------- LoRA Replacement --------------------------------
 
         # # -------------------------------- MoE Replacement --------------------------------
@@ -163,6 +156,12 @@ class UIPrompt:
         # # -------------------------------- MoE Replacement --------------------------------
 
         model.init_prompt(pre_model, post_att, nuser, nitem, lora_layer_nums, num_heads, pad_token_id)
+        # Finally, freeze all parameters except for LoRA parameters.
+        for name, param in model.named_parameters():
+            if "lora_text_right" in name or "lora_text_left" in name or "lora_base_right" in name or "lora_base_left" in name or "lora_img_right" in name or "lora_img_left" in name or "lora_gate_generator" in name or "rating_head_mlp" in name:
+                param.requires_grad = True
+            else:
+                param.requires_grad = False
         return model
 
     def init_prompt(self, pre_model, post_att, nuser, nitem, lora_nums, num_heads, pad_token_id):
@@ -176,7 +175,19 @@ class UIPrompt:
         with open(pre_model, 'rb') as f:
             self.pre_model = torch.load(f)
 
-        self.rec = MLP(emsize)
+        # self.rec = MLP(emsize)
+
+        bert_model_name = '/hpc2hdd/home/hchen763/Projects/LoRA-Rec/LoRA-GPT/LoRA-Rec-Clip/train_bert/fine_tuned_bert/MoviesAndTV/bert_fine_tuned'
+        print(now_time() + f'Loading frozen BERT model: {bert_model_name}')
+        self.frozen_bert = BertModel.from_pretrained(bert_model_name)
+        self.frozen_bert.eval()
+        print(now_time() + 'Initializing trainable rating head MLP...')
+        initrange = 0.1
+        bert_hidden_size = self.frozen_bert.config.hidden_size
+        self.rating_head_mlp = nn.Linear(bert_hidden_size, 1)
+        self.rating_head_mlp.weight.data.uniform_(-initrange, initrange)
+        self.rating_head_mlp.bias.data.zero_()
+
         self.att = nn.MultiheadAttention(emsize, num_heads, dropout=0.2, batch_first=True)
         self.ui2emsize = nn.Linear(self.pre_model.user_embeddings.weight.size(1), emsize, bias=True)
 
@@ -227,14 +238,34 @@ class UIPrompt:
         hidden_states = transformer_outputs[0]
 
         if rating_prediction:
-            if self.post_att:
-                att_hidden_states, _ = self.att(hidden_states, hidden_states, hidden_states)
-                rec_hidden_states = att_hidden_states[
-                    torch.arange(att_hidden_states.shape[0], device=att_hidden_states.device), last_token_index]
-            else:
-                rec_hidden_states = hidden_states[
-                    torch.arange(hidden_states.shape[0], device=hidden_states.device), last_token_index]
-            rating = self.rec(rec_hidden_states)
+            # if self.post_att:
+            #     att_hidden_states, _ = self.att(hidden_states, hidden_states, hidden_states)
+            #     rec_hidden_states = att_hidden_states[
+            #         torch.arange(att_hidden_states.shape[0], device=att_hidden_states.device), last_token_index]
+            # else:
+            #     rec_hidden_states = hidden_states[
+            #         torch.arange(hidden_states.shape[0], device=hidden_states.device), last_token_index]
+            # rating = self.rec(rec_hidden_states)
+            # if attention_mask is None:
+            #     print(now_time() + "Warning: attention_mask is None during rating prediction. BERT might behave unexpectedly.")
+            bert_input_embeds = hidden_states
+            self.proj_layer = nn.Linear(768, 128)
+            self.proj_layer.to(bert_input_embeds.device)
+            bert_input_embeds = self.proj_layer(bert_input_embeds)
+            with torch.no_grad():
+                bert_outputs = self.frozen_bert(
+                    inputs_embeds=bert_input_embeds,
+                    attention_mask=attention_mask, # 使用 GPT-2 对应的注意力掩码
+                    return_dict=True
+                )
+            # 提取 BERT 输出的第一个 token ([CLS] 位置) 的隐藏状态
+            # last_hidden_state shape: [batch_size, sequence_length, bert_hidden_size]
+            bert_cls_embedding = bert_outputs.last_hidden_state[:, 0, :] # 取第一个位置
+
+            # 通过新的可训练 MLP 评分头得到评分
+            # rating_head_mlp 是可训练的，所以这里不需要 no_grad
+            rating = self.rating_head_mlp(bert_cls_embedding) # shape: [batch_size, 1]
+            rating = torch.squeeze(rating, dim=-1) # 压缩维度得到 shape: [batch_size,]
         else:
             rating = None
 
@@ -322,6 +353,7 @@ class UIPrompt:
                                      torch.tensor(ignore_index).to(device))  # replace <pad> with ignore_index
             # prediction = torch.cat([pred_left, pred_right], 1)  # (batch_size, total_len)
             prediction = pred_right
+
             return self._forward(attention_mask=pad_input, inputs_embeds=src, labels=prediction,
                                  lora_nums=self.lora_nums, last_token_index=last_token_index,
                                  rating_prediction=rating_prediction)

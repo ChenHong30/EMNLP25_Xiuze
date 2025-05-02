@@ -5,4 +5,6 @@
 /__pycache__
 /outputs
 /models
-
+*.pt
+*.safetensors
+*.json
