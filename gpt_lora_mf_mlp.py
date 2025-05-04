@@ -177,7 +177,7 @@ class UIPrompt:
 
         # self.rec = MLP(emsize)
 
-        bert_model_name = '/hpc2hdd/home/hchen763/Projects/LoRA-Rec/LoRA-GPT/LoRA-Rec-Clip/train_bert/fine_tuned_bert/MoviesAndTV/bert_fine_tuned'
+        bert_model_name = '/hpc2hdd/home/hchen763/Projects/LoRA-Rec/LoRA-GPT/LoRA-Rec-Clip/train_bert/fine_tuned_bert/ClothingShoesAndJewelry/bert_fine_tuned'
         print(now_time() + f'Loading frozen BERT model: {bert_model_name}')
         self.frozen_bert = BertModel.from_pretrained(bert_model_name)
         self.frozen_bert.eval()

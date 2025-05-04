@@ -1,5 +1,6 @@
 echo $1
-d_type=MoviesAndTV
+# d_type=MoviesAndTV
+d_type=ClothingShoesAndJewelry
 # bert_model_name=/hpc2hdd/home/hchen763/jhaidata/local_model/bert-base-uncased
 bert_model_name=google/bert_uncased_L-2_H-128_A-2
 lr=5e-5
