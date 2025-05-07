@@ -5,7 +5,7 @@ transformers.models.gpt2.modeling_gpt2.GPT2Attention.forward = models_forward.gp
 transformers.models.gpt2.modeling_gpt2.GPT2Block.forward = models_forward.gpt2_block_forward
 transformers.models.gpt2.modeling_gpt2.GPT2Model.forward = models_forward.gpt2_model_forward
 
-from transformers import GPT2Tokenizer,GPT2LMHeadModel, BertModel
+from transformers import GPT2Tokenizer,GPT2LMHeadModel, BertModel, BertTokenizer
 from transformers.modeling_outputs import CausalLMOutputWithCrossAttentions
 import torch.nn as nn
 import torch
@@ -158,7 +158,16 @@ class UIPrompt:
         model.init_prompt(pre_model, post_att, nuser, nitem, lora_layer_nums, num_heads, pad_token_id)
         # Finally, freeze all parameters except for LoRA parameters.
         for name, param in model.named_parameters():
-            if "lora_text_right" in name or "lora_text_left" in name or "lora_base_right" in name or "lora_base_left" in name or "lora_img_right" in name or "lora_img_left" in name or "lora_gate_generator" in name or "rating_head_mlp" in name:
+            if ("lora_text_right" in name or
+                "lora_text_left" in name or 
+                "lora_base_right" in name or 
+                "lora_base_left" in name or 
+                "lora_img_right" in name or 
+                "lora_img_left" in name or 
+                "lora_gate_generator" in name or 
+                "rating_head_mlp" in name or
+                "bert_student" in name or
+                "bert_proj_layer" in name):
                 param.requires_grad = True
             else:
                 param.requires_grad = False
@@ -177,16 +186,28 @@ class UIPrompt:
 
         # self.rec = MLP(emsize)
 
-        bert_model_name = '/hpc2hdd/home/hchen763/Projects/LoRA-Rec/LoRA-GPT/LoRA-Rec-Clip/train_bert/fine_tuned_bert/ClothingShoesAndJewelry/bert_fine_tuned'
-        print(now_time() + f'Loading frozen BERT model: {bert_model_name}')
-        self.frozen_bert = BertModel.from_pretrained(bert_model_name)
-        self.frozen_bert.eval()
+        bert_model_name_teacher = '/hpc2hdd/home/hchen763/jhaidata/local_model/bert-base-uncased'
+        bert_model_name_student = 'google/bert_uncased_L-2_H-128_A-2'
+        # 教师模型
+        print(now_time() + f'Loading teacher BERT model: {bert_model_name_teacher}')
+        self.bert_tokenizer_teacher = BertTokenizer.from_pretrained(bert_model_name_teacher)
+        self.bert_teacher = BertModel.from_pretrained(bert_model_name_teacher)
+        self.bert_teacher.eval()
+        # 学生模型
+        print(now_time() + f'Loading student BERT model: {bert_model_name_student}')
+        self.bert_tokenizer_student = BertTokenizer.from_pretrained(bert_model_name_student)
+        self.bert_student = BertModel.from_pretrained(bert_model_name_student)
+        # 评分头
         print(now_time() + 'Initializing trainable rating head MLP...')
         initrange = 0.1
-        bert_hidden_size = self.frozen_bert.config.hidden_size
+        bert_hidden_size = self.bert_student.config.hidden_size
         self.rating_head_mlp = nn.Linear(bert_hidden_size, 1)
         self.rating_head_mlp.weight.data.uniform_(-initrange, initrange)
         self.rating_head_mlp.bias.data.zero_()
+        # 维度投影层
+        self.bert_proj_layer = nn.Linear(768, 128)
+        # 蒸馏损失计算
+        self.distil_criterion = torch.nn.MSELoss()
 
         self.att = nn.MultiheadAttention(emsize, num_heads, dropout=0.2, batch_first=True)
         self.ui2emsize = nn.Linear(self.pre_model.user_embeddings.weight.size(1), emsize, bias=True)
@@ -210,6 +231,7 @@ class UIPrompt:
             output_attentions: Optional[bool] = None,
             output_hidden_states: Optional[bool] = None,
             return_dict: Optional[bool] = None,
+            raw_text = None
     ) -> Union[Tuple, CausalLMOutputWithCrossAttentions]:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
@@ -236,7 +258,7 @@ class UIPrompt:
             return_dict=return_dict,
         )
         hidden_states = transformer_outputs[0]
-
+        distillation_loss = None
         if rating_prediction:
             # if self.post_att:
             #     att_hidden_states, _ = self.att(hidden_states, hidden_states, hidden_states)
@@ -248,23 +270,50 @@ class UIPrompt:
             # rating = self.rec(rec_hidden_states)
             # if attention_mask is None:
             #     print(now_time() + "Warning: attention_mask is None during rating prediction. BERT might behave unexpectedly.")
-            bert_input_embeds = hidden_states
-            self.proj_layer = nn.Linear(768, 128)
-            self.proj_layer.to(bert_input_embeds.device)
-            bert_input_embeds = self.proj_layer(bert_input_embeds)
-            with torch.no_grad():
-                bert_outputs = self.frozen_bert(
-                    inputs_embeds=bert_input_embeds,
-                    attention_mask=attention_mask, # 使用 GPT-2 对应的注意力掩码
-                    return_dict=True
-                )
-            # 提取 BERT 输出的第一个 token ([CLS] 位置) 的隐藏状态
-            # last_hidden_state shape: [batch_size, sequence_length, bert_hidden_size]
-            bert_cls_embedding = bert_outputs.last_hidden_state[:, 0, :] # 取第一个位置
+            
+            # 学生输入
+            bert_input_embeds_student = hidden_states
+            self.bert_proj_layer.to(bert_input_embeds_student.device)
+            bert_input_embeds_student = self.bert_proj_layer(bert_input_embeds_student)
+            bert_outputs_student = self.bert_student(
+                inputs_embeds=bert_input_embeds_student,
+                attention_mask=attention_mask, # 使用 GPT-2 对应的注意力掩码
+                return_dict=True
+            )
+            # 提取 Student BERT 输出的第一个 token ([CLS] 位置) 的隐藏状态
+            bert_cls_embedding_student = bert_outputs_student.last_hidden_state[:, 0, :] # 取第一个位置
+            
+            # 教师输入
+            if raw_text is not None:
+                bert_input_embeds_teacher = self.bert_tokenizer_teacher(
+                        raw_text,
+                        padding='max_length',        # Pad to BERT max length
+                        truncation=True,             # Truncate if longer
+                        max_length=32,
+                        return_tensors='pt'          # Return PyTorch tensors
+                    )
+                input_ids_teacher = bert_input_embeds_teacher['input_ids'].to(hidden_states.device)
+                attention_mask_teacher = bert_input_embeds_teacher['attention_mask'].to(hidden_states.device)
+                
+                with torch.no_grad():
+                    bert_embedding_output_teacher = self.bert_teacher.embeddings(input_ids=input_ids_teacher)
+                    bert_outputs_teacher = self.bert_teacher(
+                        inputs_embeds=bert_embedding_output_teacher,
+                        attention_mask=attention_mask_teacher, # 使用 GPT-2 对应的注意力掩码
+                        return_dict=True
+                    )
+                # 提取 Teacher BERT 输出的第一个 token ([CLS] 位置) 的隐藏状态
+                bert_cls_embedding_teacher = bert_outputs_teacher.last_hidden_state[:, 0, :] # 取第一个位置
+                # 计算蒸馏损失
+                # 添加一个线性层来投影教师的 embedding 到 128 维
+                if not hasattr(self, 'teacher_proj_layer'):
+                    self.teacher_proj_layer = nn.Linear(768, 128, bias=False).to(hidden_states.device)
+                bert_cls_embedding_teacher = self.teacher_proj_layer(bert_cls_embedding_teacher)
+                distillation_loss = self.distil_criterion(bert_cls_embedding_student, bert_cls_embedding_teacher.detach())
 
             # 通过新的可训练 MLP 评分头得到评分
             # rating_head_mlp 是可训练的，所以这里不需要 no_grad
-            rating = self.rating_head_mlp(bert_cls_embedding) # shape: [batch_size, 1]
+            rating = self.rating_head_mlp(bert_cls_embedding_student) # shape: [batch_size, 1]
             rating = torch.squeeze(rating, dim=-1) # 压缩维度得到 shape: [batch_size,]
         else:
             rating = None
@@ -290,17 +339,27 @@ class UIPrompt:
         if not return_dict:
             output = (lm_logits,) + transformer_outputs[1:]
             return ((loss,) + output) if loss is not None else output
+        if distillation_loss is not None:
+            return CausalLMOutputWithCrossAttentions(
+                loss=loss,
+                logits=lm_logits,
+                past_key_values=transformer_outputs.past_key_values,
+                hidden_states=transformer_outputs.hidden_states,
+                attentions=transformer_outputs.attentions,
+                cross_attentions=transformer_outputs.cross_attentions,
+            ), rating, distillation_loss
+        else:
+            return CausalLMOutputWithCrossAttentions(
+                loss=loss,
+                logits=lm_logits,
+                past_key_values=transformer_outputs.past_key_values,
+                hidden_states=transformer_outputs.hidden_states,
+                attentions=transformer_outputs.attentions,
+                cross_attentions=transformer_outputs.cross_attentions,
+            ), rating
+            
 
-        return CausalLMOutputWithCrossAttentions(
-            loss=loss,
-            logits=lm_logits,
-            past_key_values=transformer_outputs.past_key_values,
-            hidden_states=transformer_outputs.hidden_states,
-            attentions=transformer_outputs.attentions,
-            cross_attentions=transformer_outputs.cross_attentions,
-        ), rating
-
-    def forward(self, user, item, text, mask, item_embedding=None, rating_prediction=True, ignore_index=-100):
+    def forward(self, user, item, text, mask, item_embedding=None, rating_prediction=True, ignore_index=-100, raw_text=None):
         device = user.device
 
         if rating_prediction:
@@ -340,7 +399,7 @@ class UIPrompt:
             # print("Enter first if branch..........")
             # auto-regressive generation
             return self._forward(inputs_embeds=src, lora_nums=self.lora_nums, last_token_index=last_token_index,
-                                 rating_prediction=rating_prediction)
+                                 rating_prediction=rating_prediction, raw_text=raw_text)
         else:
             # training
             # input padding
@@ -356,7 +415,7 @@ class UIPrompt:
 
             return self._forward(attention_mask=pad_input, inputs_embeds=src, labels=prediction,
                                  lora_nums=self.lora_nums, last_token_index=last_token_index,
-                                 rating_prediction=rating_prediction)
+                                 rating_prediction=rating_prediction, raw_text=raw_text)
 
 
 class ContinuousPromptLearning(UIPrompt, GPT2LMHeadModel):

@@ -1,3 +1,6 @@
+import cProfile
+import pstats
+import io
 import os
 import math
 import torch
@@ -132,6 +135,7 @@ def train(data):
     model.train()
     text_loss = 0.
     rating_loss = 0.
+    distil_loss = 0.
     total_sample = 0
 
     first_param = next(model.parameters()) # 获取第一个参数
@@ -143,40 +147,45 @@ def train(data):
     #         print(now_time() + f"  {name}: {param.shape}")
 
     while True:
-        user, item, rating, seq, mask, item_embedding = data.next_batch()  # data.step += 1
+        user, item, rating, seq, mask, item_embedding, raw_text = data.next_batch()  # data.step += 1
         user = user.to(device)  # (batch_size,)
         item = item.to(device)
         rating = rating.to(device)
         seq = seq.to(device)  # (batch_size, seq_len)
         mask = mask.to(device)
+        
         item_embedding = item_embedding.to(device)
         # Starting each batch, we detach the hidden state from how it was previously produced.
         # If we didn't, the model would try backpropagating all the way to start of the dataset.
         optimizer.zero_grad()
-        outputs, rating_p = model(
+        outputs, rating_p, distillation_loss = model(
             user=user, 
             item=item, 
             text=seq, 
             mask=mask, 
-            item_embedding = item_embedding)
+            item_embedding = item_embedding,
+            raw_text = raw_text)
         t_loss = outputs.loss
         r_loss = rating_criterion(rating_p, rating)
-        loss = args.text_reg * t_loss + args.rating_reg * r_loss
+        loss = args.text_reg * t_loss + args.rating_reg * r_loss + distillation_loss
         loss.backward()
         optimizer.step()
 
         batch_size = user.size(0)
         text_loss += batch_size * t_loss.item()
         rating_loss += batch_size * r_loss.item()
+        distil_loss += batch_size * distillation_loss.item()
         total_sample += batch_size
 
         if data.step % args.log_interval == 0 or data.step == data.total_step:
             cur_t_loss = text_loss / total_sample
             cur_r_loss = rating_loss / total_sample
-            print(now_time() + 'text ppl {:4.4f} | rating loss {:4.4f} | {:5d}/{:5d} batches'.format(
-                math.exp(cur_t_loss), cur_r_loss, data.step, data.total_step))
+            cur_d_loss = distil_loss / total_sample
+            print(now_time() + 'text ppl {:4.4f} | distil loss {:4.4f} | rating loss {:4.4f} | {:5d}/{:5d} batches'.format(
+                math.exp(cur_t_loss), cur_d_loss, cur_r_loss, data.step, data.total_step))
             text_loss = 0.
             rating_loss = 0.
+            distil_loss = 0.
             total_sample = 0
         if data.step == data.total_step:
             break
@@ -190,14 +199,15 @@ def evaluate(data):
     total_sample = 0
     with torch.no_grad():
         while True:
-            user, item, rating, seq, mask, item_embedding = data.next_batch()  # data.step += 1
+            user, item, rating, seq, mask, item_embedding, raw_text = data.next_batch()  # data.step += 1
             user = user.to(device)  # (batch_size,)
             item = item.to(device)
             rating = rating.to(device)
             seq = seq.to(device)  # (batch_size, seq_len)
             mask = mask.to(device)
             item_embedding = item_embedding.to(device)
-            outputs, rating_p = model(user, item, seq, mask, item_embedding = item_embedding)
+            
+            outputs, rating_p = model(user, item, seq, mask, item_embedding = item_embedding, raw_text = None)
             t_loss = outputs.loss
             r_loss = rating_criterion(rating_p, rating)
 
@@ -218,19 +228,20 @@ def generate(data):
     rating_predict = []
     with torch.no_grad():
         while True:
-            user, item, _, seq, _, item_embedding = data.next_batch()  # data.step += 1
+            user, item, _, seq, _, item_embedding, raw_text = data.next_batch()  # data.step += 1
             user = user.to(device)  # (batch_size,)
             item = item.to(device)
             text = seq[:, :1].to(device)  # bos, (batch_size, 1)
             text_len = seq.size(1)
             item_embedding = item_embedding.to(device)
+            
             for idx in range(seq.size(1)):
                 # produce a word at each step
                 if idx == text_len - 1:
-                    outputs, rating_p = model(user, item, text, None, item_embedding = item_embedding)
+                    outputs, rating_p = model(user, item, text, None, item_embedding = item_embedding, raw_text = None)
                     rating_predict.extend(rating_p.tolist())
                 else:
-                    outputs, _ = model(user, item, text, None, rating_prediction=False, item_embedding=item_embedding)
+                    outputs, _ = model(user, item, text, None, rating_prediction=False, item_embedding=item_embedding, raw_text = None)
                 last_token = outputs.logits[:, -1, :]  # the last token, (batch_size, ntoken)
                 word_prob = torch.softmax(last_token, dim=-1)
                 token = torch.argmax(word_prob, dim=1,
@@ -268,6 +279,7 @@ for epoch in range(1, args.epochs + 1):
             break
 
 # Load the best saved model.
+model_path = "models/ClothingShoesAndJewelry/1/GPTLoRA/model.pt"
 with open(model_path, 'rb') as f:
     model = torch.load(f).to(device)
 

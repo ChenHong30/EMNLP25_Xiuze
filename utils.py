@@ -368,6 +368,7 @@ class Batchify:
 
         self.has_embeddings = True
         self.item_embeddings = []
+        raw_text = []
         
         # # 检查数据项中是否包含图像嵌入
         # if len(data) > 0 and 'item_embedding' in data[0]:
@@ -379,6 +380,7 @@ class Batchify:
             r.append(x['rating'])
             t.append('{} {} {} {}'.format(x['feature'], bos, x['text'], eos))
             self.feature.append(x['feature'])
+            raw_text.append(x['text'])  # 保存原始文本
 
             # 如果有嵌入向量，添加到列表中
             if self.has_embeddings and 'item_embedding' in x:
@@ -392,7 +394,8 @@ class Batchify:
         self.mask = encoded_inputs['attention_mask'].contiguous()
         self.user = torch.tensor(u, dtype=torch.int64).contiguous()
         self.item = torch.tensor(i, dtype=torch.int64).contiguous()
-        self.rating = torch.tensor(r, dtype=torch.float).contiguous()
+        self.rating = torch.tensor(r, dtype=torch.float).contiguous() 
+        self.raw_text = raw_text
 
         # 如果有嵌入向量，转换为张量
         if self.has_embeddings:
@@ -420,13 +423,14 @@ class Batchify:
         rating = self.rating[index]
         seq = self.seq[index]  # (batch_size, seq_len)
         mask = self.mask[index]
+        raw_text = [self.raw_text[i] for i in index] # 获取当前批次的原始文本
 
         if self.has_embeddings:
             # breakpoint()
-            return user, item, rating, seq, mask, self.item_embeddings[index]
+            return user, item, rating, seq, mask, self.item_embeddings[index], raw_text
         else:
             # breakpoint()
-            return user, item, rating, seq, mask
+            return user, item, rating, seq, mask, raw_text
 
 
 class Batchify2:
