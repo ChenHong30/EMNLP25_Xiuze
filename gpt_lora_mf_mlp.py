@@ -301,27 +301,28 @@ class UIPrompt:
             
             # 教师输入
             if raw_text is not None:
-                bert_input_embeds_teacher = self.bert_tokenizer_teacher(
-                        raw_text,
-                        padding='max_length',        # Pad to BERT max length
-                        truncation=True,             # Truncate if longer
-                        max_length=32,
-                        return_tensors='pt'          # Return PyTorch tensors
-                    )
-                input_ids_teacher = bert_input_embeds_teacher['input_ids'].to(hidden_states.device)
-                attention_mask_teacher = bert_input_embeds_teacher['attention_mask'].to(hidden_states.device)
+                # bert_input_embeds_teacher = self.bert_tokenizer_teacher(
+                #         raw_text,
+                #         padding='max_length',        # Pad to BERT max length
+                #         truncation=True,             # Truncate if longer
+                #         max_length=32,
+                #         return_tensors='pt'          # Return PyTorch tensors
+                #     )
+                # input_ids_teacher = bert_input_embeds_teacher['input_ids'].to(hidden_states.device)
+                # attention_mask_teacher = bert_input_embeds_teacher['attention_mask'].to(hidden_states.device)
                 
-                with torch.no_grad():
-                    bert_embedding_output_teacher = self.bert_teacher.embeddings(input_ids=input_ids_teacher)
-                    bert_outputs_teacher = self.bert_teacher(
-                        inputs_embeds=bert_embedding_output_teacher,
-                        attention_mask=attention_mask_teacher, # 使用 GPT-2 对应的注意力掩码
-                        return_dict=True
-                    )
-                # 提取 Teacher BERT 输出的第一个 token ([CLS] 位置) 的隐藏状态
-                bert_cls_embedding_teacher = bert_outputs_teacher.last_hidden_state[:, 0, :] # 取第一个位置
-                # 计算蒸馏损失     
-                distillation_loss = self.distil_criterion(bert_cls_embedding_student, bert_cls_embedding_teacher.detach())
+                # with torch.no_grad():
+                #     bert_embedding_output_teacher = self.bert_teacher.embeddings(input_ids=input_ids_teacher)
+                #     bert_outputs_teacher = self.bert_teacher(
+                #         inputs_embeds=bert_embedding_output_teacher,
+                #         attention_mask=attention_mask_teacher, # 使用 GPT-2 对应的注意力掩码
+                #         return_dict=True
+                #     )
+                # # 提取 Teacher BERT 输出的第一个 token ([CLS] 位置) 的隐藏状态
+                # bert_cls_embedding_teacher = bert_outputs_teacher.last_hidden_state[:, 0, :] # 取第一个位置
+                # # 计算蒸馏损失     
+                # distillation_loss = self.distil_criterion(bert_cls_embedding_student, bert_cls_embedding_teacher.detach())
+                distillation_loss = torch.tensor(0.0, requires_grad=False)
 
             # 通过新的可训练 MLP 评分头得到评分
             # rating_head_mlp 是可训练的，所以这里不需要 no_grad
