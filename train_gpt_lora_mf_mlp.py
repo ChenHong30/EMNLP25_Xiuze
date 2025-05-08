@@ -279,7 +279,6 @@ for epoch in range(1, args.epochs + 1):
             break
 
 # Load the best saved model.
-model_path = "models/ClothingShoesAndJewelry/1/GPTLoRA/model.pt"
 with open(model_path, 'rb') as f:
     model = torch.load(f).to(device)
 

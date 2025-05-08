@@ -5,7 +5,7 @@ transformers.models.gpt2.modeling_gpt2.GPT2Attention.forward = models_forward.gp
 transformers.models.gpt2.modeling_gpt2.GPT2Block.forward = models_forward.gpt2_block_forward
 transformers.models.gpt2.modeling_gpt2.GPT2Model.forward = models_forward.gpt2_model_forward
 
-from transformers import GPT2Tokenizer,GPT2LMHeadModel, BertModel, BertTokenizer
+from transformers import GPT2Tokenizer,GPT2LMHeadModel, BertModel, BertTokenizer, BertConfig
 from transformers.modeling_outputs import CausalLMOutputWithCrossAttentions
 import torch.nn as nn
 import torch
@@ -166,9 +166,9 @@ class UIPrompt:
                 "lora_img_left" in name or 
                 "lora_gate_generator" in name or 
                 "rating_head_mlp" in name or
-                "bert_student" in name or
-                "bert_proj_layer" in name):
+                "bert_student" in name):
                 param.requires_grad = True
+                print(now_time() + f"Trainable parameter: {name}")
             else:
                 param.requires_grad = False
         return model
@@ -194,18 +194,22 @@ class UIPrompt:
         self.bert_teacher = BertModel.from_pretrained(bert_model_name_teacher)
         self.bert_teacher.eval()
         # 学生模型
-        print(now_time() + f'Loading student BERT model: {bert_model_name_student}')
-        self.bert_tokenizer_student = BertTokenizer.from_pretrained(bert_model_name_student)
-        self.bert_student = BertModel.from_pretrained(bert_model_name_student)
+        print(now_time() + f'Loading student Transformer model')
+        self.bert_student = nn.Transformer(
+            d_model=768,
+            nhead=12,
+            num_encoder_layers=1,
+            num_decoder_layers=1,
+        )
+        self.bert_student.decoder_cls_token = nn.Parameter(torch.randn(1, 768))
         # 评分头
         print(now_time() + 'Initializing trainable rating head MLP...')
         initrange = 0.1
-        bert_hidden_size = self.bert_student.config.hidden_size
+        # bert_hidden_size = self.bert_student.config.hidden_size
+        bert_hidden_size = 768
         self.rating_head_mlp = nn.Linear(bert_hidden_size, 1)
         self.rating_head_mlp.weight.data.uniform_(-initrange, initrange)
         self.rating_head_mlp.bias.data.zero_()
-        # 维度投影层
-        self.bert_proj_layer = nn.Linear(768, 128)
         # 蒸馏损失计算
         self.distil_criterion = torch.nn.MSELoss()
 
@@ -273,15 +277,27 @@ class UIPrompt:
             
             # 学生输入
             bert_input_embeds_student = hidden_states
-            self.bert_proj_layer.to(bert_input_embeds_student.device)
-            bert_input_embeds_student = self.bert_proj_layer(bert_input_embeds_student)
+            src = bert_input_embeds_student.permute(1, 0, 2)
+            current_batch_size = bert_input_embeds_student.shape[0]
+            tgt = self.bert_student.decoder_cls_token.unsqueeze(1).repeat(1, current_batch_size, 1)
+            if attention_mask is not None:
+                # attention_mask from HuggingFace is typically (batch_size, src_seq_len)
+                # where 0 indicates padding.
+                # src_key_padding_mask for nn.Transformer (with batch_first=False for encoder input)
+                # expects (batch_size, src_seq_len) where True indicates padding.
+                transformer_padding_mask = (attention_mask == 0)
+                # transformer_padding_mask 会是布尔张量，shape (batch_size, src_seq_len)
+            else:
+                # If no attention_mask is provided, then no padding.
+                transformer_padding_mask = None
             bert_outputs_student = self.bert_student(
-                inputs_embeds=bert_input_embeds_student,
-                attention_mask=attention_mask, # 使用 GPT-2 对应的注意力掩码
-                return_dict=True
+                src=src,
+                tgt=tgt,
+                src_key_padding_mask=transformer_padding_mask,
+                memory_key_padding_mask=transformer_padding_mask
             )
             # 提取 Student BERT 输出的第一个 token ([CLS] 位置) 的隐藏状态
-            bert_cls_embedding_student = bert_outputs_student.last_hidden_state[:, 0, :] # 取第一个位置
+            bert_cls_embedding_student = bert_outputs_student.squeeze(0)
             
             # 教师输入
             if raw_text is not None:
@@ -304,11 +320,7 @@ class UIPrompt:
                     )
                 # 提取 Teacher BERT 输出的第一个 token ([CLS] 位置) 的隐藏状态
                 bert_cls_embedding_teacher = bert_outputs_teacher.last_hidden_state[:, 0, :] # 取第一个位置
-                # 计算蒸馏损失
-                # 添加一个线性层来投影教师的 embedding 到 128 维
-                if not hasattr(self, 'teacher_proj_layer'):
-                    self.teacher_proj_layer = nn.Linear(768, 128, bias=False).to(hidden_states.device)
-                bert_cls_embedding_teacher = self.teacher_proj_layer(bert_cls_embedding_teacher)
+                # 计算蒸馏损失     
                 distillation_loss = self.distil_criterion(bert_cls_embedding_student, bert_cls_embedding_teacher.detach())
 
             # 通过新的可训练 MLP 评分头得到评分
