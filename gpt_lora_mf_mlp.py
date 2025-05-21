@@ -164,7 +164,9 @@ class UIPrompt:
                 "lora_base_left" in name or 
                 "lora_img_right" in name or 
                 "lora_img_left" in name or 
-                "lora_gate_generator" in name):
+                "lora_gate_generator" in name or
+                "rec" in name or
+                "att" in name):
                 param.requires_grad = True
                 print(now_time() + f"Trainable parameter: {name}")
             else:
@@ -270,8 +272,6 @@ class UIPrompt:
                 rec_hidden_states = hidden_states[
                     torch.arange(hidden_states.shape[0], device=hidden_states.device), last_token_index]
             rating = self.rec(rec_hidden_states)
-            print(f"rating shape: {rating.shape}, values: {rating}")
-            print(f"rec_hidden_states shape: {rec_hidden_states.shape}, values: {rec_hidden_states}")
             # if attention_mask is None:
             #     print(now_time() + "Warning: attention_mask is None during rating prediction. BERT might behave unexpectedly.")
             
