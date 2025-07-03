@@ -509,3 +509,84 @@ def ids2tokens(ids, tokenizer, eos):
             break
         tokens.append(token)
     return tokens
+
+import numpy as np
+from collections import defaultdict
+import random
+
+def get_negative_samples(user_id, item_count, interacted_items, num_neg=99):
+    """
+    为每个user采样负样本
+    """
+    negs = set()
+    while len(negs) < num_neg:
+        neg = random.randint(0, item_count-1)
+        if neg not in interacted_items:
+            negs.add(neg)
+    return list(negs)
+
+def evaluate_ranking(model, test_data, all_user_interactions, k=10, device='cuda:0', pad_token_id=0):
+    """
+    评测所有user的NDCG@K和HR@K
+    """
+    model.eval()
+    hits, ndcgs, user_count = [], [], 0
+    item_count = test_data.item.max().item() + 1  # item总数
+
+    for idx in range(test_data.user.size(0)):
+        user = test_data.user[idx].item()
+        true_item = test_data.item[idx].item()
+        # 构造负样本集合（不在该user历史交互中的item）
+        negatives = get_negative_samples(user, item_count, all_user_interactions[user], num_neg=99)
+        items = [true_item] + negatives
+        users = [user] * len(items)
+        
+        users = torch.tensor(users, dtype=torch.int64).to(device)
+        items = torch.tensor(items, dtype=torch.int64).to(device)
+
+        # 支持有item_embedding输入
+        # item_embeddings shape: (n_items, embed_dim)
+        if hasattr(test_data, 'item_embeddings'):
+            # 动态分配：有embedding就用，没有就用零向量
+            batch_embeddings = []
+            embedding_dim = test_data.item_embeddings.shape[-1]
+            for idx in items.cpu().numpy():
+                if idx < test_data.item_embeddings.shape[0]:
+                    batch_embeddings.append(test_data.item_embeddings[idx].unsqueeze(0))
+                else:
+                    batch_embeddings.append(torch.zeros(1, embedding_dim))
+            item_embeddings = torch.cat(batch_embeddings, dim=0).to(device)
+        else:
+            item_embeddings = None
+
+        # forward: user, item, seq=None, mask=None, item_embedding
+        with torch.no_grad():
+            if item_embeddings is not None:
+                dummy_text = torch.full((items.size(0), 1), fill_value=pad_token_id, dtype=torch.long, device=device)
+                dummy_mask = torch.ones_like(dummy_text)
+                _, scores = model(user=users, item=items, text=dummy_text, mask=dummy_mask, item_embedding=item_embeddings)
+            else:
+                dummy_text = torch.full((items.size(0), 1), fill_value=pad_token_id, dtype=torch.long, device=device)
+                dummy_mask = torch.ones_like(dummy_text)
+                _, scores = model(user=users, item=items, text=dummy_text, mask=dummy_mask)
+        # 得分越高排序越靠前
+        scores = scores.squeeze().cpu().numpy()
+        rank = np.argsort(-scores)
+        ranked_items = np.array([true_item] + negatives)[rank]
+
+        # HR: top-k是否命中
+        if true_item in ranked_items[:k]:
+            hits.append(1)
+        else:
+            hits.append(0)
+        # NDCG
+        if true_item in ranked_items[:k]:
+            idx = np.where(ranked_items[:k] == true_item)[0][0]
+            ndcgs.append(1 / np.log2(idx + 2))
+        else:
+            ndcgs.append(0)
+        user_count += 1
+
+    HR = np.mean(hits)
+    NDCG = np.mean(ndcgs)
+    return HR, NDCG

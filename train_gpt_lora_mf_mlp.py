@@ -10,7 +10,7 @@ from transformers import GPT2Tokenizer, AdamW
 from gpt_lora_mf_mlp import ContinuousPromptLearning
 from utils import rouge_score, bleu_score, DataLoader, Batchify, now_time, ids2tokens, unique_sentence_percent, \
     root_mean_square_error, mean_absolute_error, feature_detect, feature_matching_ratio, feature_coverage_ratio, \
-    feature_diversity
+    feature_diversity, get_negative_samples, evaluate_ranking
 
 parser = argparse.ArgumentParser(description='PErsonalized Prompt Learning for Explainable Recommendation (PEPLER)')
 parser.add_argument('-data_path', '--data_path', type=str, default="./data/TripAdvisor/reviews.pickle",
@@ -281,6 +281,20 @@ for epoch in range(1, args.epochs + 1):
 # Load the best saved model.
 with open(model_path, 'rb') as f:
     model = torch.load(f).to(device)
+
+# 构建user历史交互表，避免负采样时选中正样本
+from collections import defaultdict
+all_user_interactions = defaultdict(set)
+# 遍历train/val/test
+for data in [corpus.train, corpus.valid, corpus.test]:
+    for x in data:
+        all_user_interactions[x['user']].add(x['item'])
+
+HR, NDCG = evaluate_ranking(model, test_data, all_user_interactions, k=10, device=device, pad_token_id=tokenizer.pad_token_id)
+print(now_time() + 'HR@10 {:7.4f} | NDCG@10 {:7.4f}'.format(HR, NDCG))
+
+HR, NDCG = evaluate_ranking(model, test_data, all_user_interactions, k=5, device=device, pad_token_id=tokenizer.pad_token_id)
+print(now_time() + 'HR@5 {:7.4f} | NDCG@5 {:7.4f}'.format(HR, NDCG))
 
 # Run on test data.
 test_t_loss, test_r_loss = evaluate(test_data)
