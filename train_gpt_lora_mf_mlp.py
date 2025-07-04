@@ -53,6 +53,8 @@ parser.add_argument('-text_reg', '--text_reg', type=float, default=1.0,
                     help='regularization on text generation task')
 parser.add_argument('-words', '--words', type=int, default=20,
                     help='number of words to generate for each sample')
+parser.add_argument('-distill_reg', '--distill_reg', type=float, default=0.01,
+                    help='regularization on distillation task')
 args = parser.parse_args()
 
 if args.data_path is None:
@@ -167,7 +169,7 @@ def train(data):
             raw_text = raw_text)
         t_loss = outputs.loss
         r_loss = rating_criterion(rating_p, rating)
-        loss = args.text_reg * t_loss + args.rating_reg * r_loss + distillation_loss
+        loss = args.text_reg * t_loss + args.rating_reg * r_loss + args.distill_reg * distillation_loss
         loss.backward()
         optimizer.step()
 

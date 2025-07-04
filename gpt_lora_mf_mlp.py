@@ -154,9 +154,8 @@ class UIPrompt:
         #         if len(mismatched_names) > 20: print("        ...")
         #         print(now_time() + "This might indicate an issue with the freezing logic or unexpected model structure/naming.")
         # # -------------------------------- MoE Replacement --------------------------------
-
-        model.init_prompt(pre_model, post_att, nuser, nitem, lora_layer_nums, num_heads, pad_token_id)
         # Finally, freeze all parameters except for LoRA parameters.
+        model.init_prompt(pre_model, post_att, nuser, nitem, lora_layer_nums, num_heads, pad_token_id)
         for name, param in model.named_parameters():
             if ("lora_text_right" in name or
                 "lora_text_left" in name or 
@@ -168,8 +167,10 @@ class UIPrompt:
                 "rating_head_mlp" in name or
                 "bert_student" in name or
                 "bert_proj_layer" in name or
-                "att" in name or
-                "ui2emsize" in name or):
+                "ui2emsize" in name or
+                "pre_model" in name or
+                "teacher_proj_layer" in name or
+                "rec" in name):
                 param.requires_grad = True
                 print(now_time() + f"Trainable parameter: {name}")
             else:
@@ -187,7 +188,7 @@ class UIPrompt:
         with open(pre_model, 'rb') as f:
             self.pre_model = torch.load(f)
 
-        # self.rec = MLP(emsize)
+        self.rec = MLP(emsize)
 
         bert_model_name_teacher = '/hpc2hdd/home/hchen763/jhaidata/local_model/bert-base-uncased'
         bert_model_name_student = 'google/bert_uncased_L-2_H-128_A-2'
@@ -196,27 +197,25 @@ class UIPrompt:
         self.bert_tokenizer_teacher = BertTokenizer.from_pretrained(bert_model_name_teacher)
         self.bert_teacher = BertModel.from_pretrained(bert_model_name_teacher)
         self.bert_teacher.eval()
-        # 学生模型
-        print(now_time() + f'Loading student Transformer model')
-        self.bert_student = nn.Transformer(
-            d_model=768,
-            nhead=12,
-            num_encoder_layers=1,
-            num_decoder_layers=1,
-        )
-        self.bert_student.decoder_cls_token = nn.Parameter(torch.randn(1, 768))
-        # 评分头
-        print(now_time() + 'Initializing trainable rating head MLP...')
-        initrange = 0.1
+        # self.teacher_proj_layer = nn.Linear(768, 128, bias=False)
+        # nn.init.xavier_uniform_(self.teacher_proj_layer.weight)
+        # # 学生模型
+        # print(now_time() + f'Loading student BERT model: {bert_model_name_student}')
+        # self.bert_tokenizer_student = BertTokenizer.from_pretrained(bert_model_name_student)
+        # self.bert_student = BertModel.from_pretrained(bert_model_name_student)
+        # # 评分头
+        # print(now_time() + 'Initializing trainable rating head MLP...')
+        # initrange = 0.1
         # bert_hidden_size = self.bert_student.config.hidden_size
-        bert_hidden_size = 768
-        self.rating_head_mlp = nn.Linear(bert_hidden_size, 1)
-        self.rating_head_mlp.weight.data.uniform_(-initrange, initrange)
-        self.rating_head_mlp.bias.data.zero_()
+        # self.rating_head_mlp = nn.Linear(bert_hidden_size, 1)
+        # self.rating_head_mlp.weight.data.uniform_(-initrange, initrange)
+        # self.rating_head_mlp.bias.data.zero_()
+        # # 维度投影层
+        # self.bert_proj_layer = nn.Linear(768, 128)
         # 蒸馏损失计算
         self.distil_criterion = torch.nn.MSELoss()
 
-        self.att = nn.MultiheadAttention(emsize, num_heads, dropout=0.2, batch_first=True)
+        # self.att = nn.MultiheadAttention(emsize, num_heads, dropout=0.2, batch_first=True)
         self.ui2emsize = nn.Linear(self.pre_model.user_embeddings.weight.size(1), emsize, bias=True)
 
     def _forward(
@@ -275,33 +274,23 @@ class UIPrompt:
             #     rec_hidden_states = hidden_states[
             #         torch.arange(hidden_states.shape[0], device=hidden_states.device), last_token_index]
             # rating = self.rec(rec_hidden_states)
-            if attention_mask is None:
-                print(now_time() + "Warning: attention_mask is None during rating prediction. BERT might behave unexpectedly.")
-            
             # 学生输入
-            bert_input_embeds_student = hidden_states
-            src = bert_input_embeds_student.permute(1, 0, 2)
-            current_batch_size = bert_input_embeds_student.shape[0]
-            tgt = self.bert_student.decoder_cls_token.unsqueeze(1).repeat(1, current_batch_size, 1)
-            if attention_mask is not None:
-                # attention_mask from HuggingFace is typically (batch_size, src_seq_len)
-                # where 0 indicates padding.
-                # src_key_padding_mask for nn.Transformer (with batch_first=False for encoder input)
-                # expects (batch_size, src_seq_len) where True indicates padding.
-                transformer_padding_mask = (attention_mask == 0)
-                # transformer_padding_mask 会是布尔张量，shape (batch_size, src_seq_len)
+            if self.post_att:
+                bert_cls_embedding_student, _ = hidden_states.max(dim=1)
             else:
-                # If no attention_mask is provided, then no padding.
-                transformer_padding_mask = None
-            bert_outputs_student = self.bert_student(
-                src=src,
-                tgt=tgt,
-                src_key_padding_mask=transformer_padding_mask,
-                memory_key_padding_mask=transformer_padding_mask
-            )
-            # 提取 Student BERT 输出的第一个 token ([CLS] 位置) 的隐藏状态
-            bert_cls_embedding_student = bert_outputs_student.squeeze(0)
-            
+                bert_cls_embedding_student = hidden_states[
+                    torch.arange(hidden_states.shape[0], device=hidden_states.device), last_token_index]
+
+            # bert_input_embeds_student = hidden_states
+            # self.bert_proj_layer.to(bert_input_embeds_student.device)
+            # bert_input_embeds_student = self.bert_proj_layer(bert_input_embeds_student)
+            # bert_outputs_student = self.bert_student(
+            #     inputs_embeds=bert_input_embeds_student,
+            #     attention_mask=attention_mask, # 使用 GPT-2 对应的注意力掩码
+            #     return_dict=True
+            # )
+            # # 提取 Student BERT 输出的第一个 token ([CLS] 位置) 的隐藏状态
+            # bert_cls_embedding_student = bert_outputs_student.last_hidden_state[:, 0, :] # 取第一个位置
             # 教师输入
             if raw_text is not None:
                 bert_input_embeds_teacher = self.bert_tokenizer_teacher(
@@ -310,7 +299,7 @@ class UIPrompt:
                         truncation=True,             # Truncate if longer
                         max_length=32,
                         return_tensors='pt'          # Return PyTorch tensors
-                    )
+                )
                 input_ids_teacher = bert_input_embeds_teacher['input_ids'].to(hidden_states.device)
                 attention_mask_teacher = bert_input_embeds_teacher['attention_mask'].to(hidden_states.device)
                 
@@ -324,13 +313,16 @@ class UIPrompt:
                 # 提取 Teacher BERT 输出的第一个 token ([CLS] 位置) 的隐藏状态
                 bert_cls_embedding_teacher = bert_outputs_teacher.last_hidden_state[:, 0, :] # 取第一个位置
                 # 计算蒸馏损失     
+                # self.teacher_proj_layer.to(hidden_states.device)
+                # bert_cls_embedding_teacher = self.teacher_proj_layer(bert_cls_embedding_teacher)    
                 distillation_loss = self.distil_criterion(bert_cls_embedding_student, bert_cls_embedding_teacher.detach())
                 # distillation_loss = torch.tensor(0.0, requires_grad=False)
 
-            # 通过新的可训练 MLP 评分头得到评分
-            # rating_head_mlp 是可训练的，所以这里不需要 no_grad
-            rating = self.rating_head_mlp(bert_cls_embedding_student) # shape: [batch_size, 1]
-            rating = torch.squeeze(rating, dim=-1) # 压缩维度得到 shape: [batch_size,]
+            # # 通过新的可训练 MLP 评分头得到评分
+            # # rating_head_mlp 是可训练的，所以这里不需要 no_grad
+            # # rating = self.rating_head_mlp(bert_cls_embedding_student) # shape: [batch_size, 1]
+            # # rating = torch.squeeze(rating, dim=-1) # 压缩维度得到 shape: [batch_size,]
+            rating = self.rec(bert_cls_embedding_student)
         else:
             rating = None
 
