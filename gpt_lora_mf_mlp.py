@@ -165,12 +165,10 @@ class UIPrompt:
                 "lora_img_left" in name or 
                 "lora_gate_generator" in name or
                 "rating_head_mlp" in name or
-                "bert_student" in name or
-                "bert_proj_layer" in name or
                 "ui2emsize" in name or
                 "pre_model" in name or
-                "teacher_proj_layer" in name or
-                "rec" in name):
+                "rec" in name or
+                "student_proj_mlp" in name):
                 param.requires_grad = True
                 print(now_time() + f"Trainable parameter: {name}")
             else:
@@ -212,6 +210,7 @@ class UIPrompt:
         # self.rating_head_mlp.bias.data.zero_()
         # # 维度投影层
         # self.bert_proj_layer = nn.Linear(768, 128)
+        self.student_proj_mlp = nn.Linear(768, 768)
         # 蒸馏损失计算
         self.distil_criterion = torch.nn.MSELoss()
 
@@ -281,6 +280,7 @@ class UIPrompt:
                 bert_cls_embedding_student = hidden_states[
                     torch.arange(hidden_states.shape[0], device=hidden_states.device), last_token_index]
 
+            bert_cls_embedding_student = self.student_proj_mlp(bert_cls_embedding_student)
             # bert_input_embeds_student = hidden_states
             # self.bert_proj_layer.to(bert_input_embeds_student.device)
             # bert_input_embeds_student = self.bert_proj_layer(bert_input_embeds_student)

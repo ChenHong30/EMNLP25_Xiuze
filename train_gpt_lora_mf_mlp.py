@@ -315,26 +315,29 @@ print(now_time() + 'MAE {:7.4f}'.format(MAE))
 tokens_test = [ids2tokens(ids[1:], tokenizer, eos) for ids in test_data.seq.tolist()]
 tokens_predict = [ids2tokens(ids, tokenizer, eos) for ids in idss_predicted]
 BLEU1 = bleu_score(tokens_test, tokens_predict, n_gram=1, smooth=False)
-print(now_time() + 'BLEU-1 {:7.4f}'.format(BLEU1))
 BLEU4 = bleu_score(tokens_test, tokens_predict, n_gram=4, smooth=False)
-print(now_time() + 'BLEU-4 {:7.4f}'.format(BLEU4))
 USR, USN = unique_sentence_percent(tokens_predict)
-print(now_time() + 'USR {:7.4f} | USN {:7}'.format(USR, USN))
 feature_batch = feature_detect(tokens_predict, feature_set)
 DIV = feature_diversity(feature_batch)  # time-consuming
-print(now_time() + 'DIV {:7.4f}'.format(DIV))
 FCR = feature_coverage_ratio(feature_batch, feature_set)
-print(now_time() + 'FCR {:7.4f}'.format(FCR))
 FMR = feature_matching_ratio(feature_batch, test_data.feature)
-print(now_time() + 'FMR {:7.4f}'.format(FMR))
 text_test = [' '.join(tokens) for tokens in tokens_test]
 text_predict = [' '.join(tokens) for tokens in tokens_predict]
 ROUGE = rouge_score(text_test, text_predict)  # a dictionary
-for (k, v) in ROUGE.items():
-    print(now_time() + '{} {:7.4f}'.format(k, v))
 text_out = ''
 for (real, fake) in zip(text_test, text_predict):
     text_out += '{}\n{}\n\n'.format(real, fake)
 with open(prediction_path, 'w', encoding='utf-8') as f:
     f.write(text_out)
+
+# 打印结果
+print(now_time() + 'FMR {:7.4f}'.format(FMR))
+print(now_time() + 'FCR {:7.4f}'.format(FCR))
+print(now_time() + 'DIV {:7.4f}'.format(DIV))
+print(now_time() + 'USR {:7.4f} | USN {:7}'.format(USR, USN))
+print(now_time() + 'BLEU-1 {:7.4f}'.format(BLEU1))
+print(now_time() + 'BLEU-4 {:7.4f}'.format(BLEU4))
+for (k, v) in ROUGE.items():
+    print(now_time() + '{} {:7.4f}'.format(k, v))
+
 print(now_time() + 'Generated text saved to ({})'.format(prediction_path))
