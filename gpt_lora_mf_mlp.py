@@ -168,7 +168,8 @@ class UIPrompt:
                 "ui2emsize" in name or
                 "pre_model" in name or
                 "rec" in name or
-                "student_proj_mlp" in name):
+                "student_proj_mlp" in name or
+                "distill_proj_layer" in name):
                 param.requires_grad = True
                 print(now_time() + f"Trainable parameter: {name}")
             else:
@@ -208,9 +209,9 @@ class UIPrompt:
         # self.rating_head_mlp = nn.Linear(bert_hidden_size, 1)
         # self.rating_head_mlp.weight.data.uniform_(-initrange, initrange)
         # self.rating_head_mlp.bias.data.zero_()
-        # # 维度投影层
-        # self.bert_proj_layer = nn.Linear(768, 128)
-        self.student_proj_mlp = nn.Linear(768, 768)
+        # 维度投影层
+        self.distill_proj_layer = nn.Linear(emsize, 768)
+        self.student_proj_mlp = nn.Linear(emsize, emsize)
         # 蒸馏损失计算
         self.distil_criterion = torch.nn.MSELoss()
 
@@ -314,8 +315,13 @@ class UIPrompt:
                 bert_cls_embedding_teacher = bert_outputs_teacher.last_hidden_state[:, 0, :] # 取第一个位置
                 # 计算蒸馏损失     
                 # self.teacher_proj_layer.to(hidden_states.device)
-                # bert_cls_embedding_teacher = self.teacher_proj_layer(bert_cls_embedding_teacher)    
-                distillation_loss = self.distil_criterion(bert_cls_embedding_student, bert_cls_embedding_teacher.detach())
+                # bert_cls_embedding_teacher = self.teacher_proj_layer(bert_cls_embedding_teacher)  
+                # 判断student和teacher的维度是否一致,不一致则进行映射
+                if bert_cls_embedding_student.size(-1) != bert_cls_embedding_teacher.size(-1):
+                    student_projected = self.distill_proj_layer(bert_cls_embedding_student)
+                else:
+                    student_projected = bert_cls_embedding_student
+                distillation_loss = self.distil_criterion(student_projected, bert_cls_embedding_teacher.detach())
                 # distillation_loss = torch.tensor(0.0, requires_grad=False)
 
             # # 通过新的可训练 MLP 评分头得到评分

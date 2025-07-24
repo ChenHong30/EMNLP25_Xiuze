@@ -143,6 +143,9 @@ def train(data):
     first_param = next(model.parameters()) # 获取第一个参数
     first_param.requires_grad = True       # 仅设置第一个参数的 requires grad=True
 
+    # for param in model.parameters():
+    #     param.requires_grad = True
+
     # print(now_time() + "Trainable Parameters:")
     # for name, param in model.named_parameters():
     #     if param.requires_grad:
